@@ -1,23 +1,22 @@
 package util;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.InputStreamReader;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.StringJoiner;
 
 public class Config {
     private int port = 9999;
     private Set<String> blockList = new HashSet<>();
 
     public Config(String path) {
-        if (path != null) {
-            try {
-                load(path);
-            } catch (Exception e) {
-                throw new RuntimeException(e.getMessage());
-            }
+        try {
+            if (path != null) load(path);
+        } catch (Exception e) {
+            throw new RuntimeException(e.getMessage());
         }
     }
 
@@ -29,28 +28,27 @@ public class Config {
         return blockList;
     }
 
-    private void load(String path) throws Exception {
-        File file = new File(path);
-        if (!file.exists()) throw new RuntimeException("config file not found '" + file.getAbsolutePath() + "'");
+    @Override
+    public String toString() {
+        return new StringJoiner(", ", Config.class.getSimpleName() + "[", "]")
+                .add("port=" + port)
+                .add("blockList=" + blockList)
+                .toString();
+    }
 
-        BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file)));
-        String line;
-        while (reader.ready()) {
-            line = reader.readLine();
-            if (line.length() == 0 || line.startsWith("#")) continue;
+    private void load(String filepath) throws IOException {
+        Path path = Paths.get(filepath);
+        if (!Files.exists(path)) throw new RuntimeException("config file not found '" + path.toAbsolutePath() + "'");
 
-            String[] input = line.trim().split(" +");
+        Files.lines(path).forEach(line -> {
+            if ((line = line.trim()).length() == 0 || line.startsWith("#")) return;
 
-            switch (input[0]) {
-                case "port":
-                    port = Integer.parseInt(input[1]);
-                    break;
-                case "block":
-                    blockList.add(input[1]);
-                    break;
-                default:
-                    throw new IllegalArgumentException("unsupported command " + input[0]);
+            String[] rowData = line.split(" +");
+            switch (rowData[0]) {
+                case "port": port = Integer.parseInt(rowData[1]); break;
+                case "block": blockList.add(rowData[1]); break;
+                default: throw new IllegalArgumentException("unknown attribute '" + rowData[0] + "'");
             }
-        }
+        });
     }
 }
