@@ -4,13 +4,11 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.HashSet;
-import java.util.Set;
-import java.util.StringJoiner;
+import java.util.*;
 
 public class Config {
-    private int port = 9999;
-    private Set<String> blockList = new HashSet<>();
+    private int port = 8080;
+    private List<String> blockPatterns = new ArrayList<>();
 
     public Config(String path) {
         try {
@@ -24,15 +22,15 @@ public class Config {
         return port;
     }
 
-    public Set<String> getBlockList() {
-        return blockList;
+    public List<String> getBlockPatterns() {
+        return blockPatterns;
     }
 
     @Override
     public String toString() {
         return new StringJoiner(", ", Config.class.getSimpleName() + "[", "]")
                 .add("port=" + port)
-                .add("blockList=" + blockList)
+                .add("blockPatterns=" + blockPatterns)
                 .toString();
     }
 
@@ -46,7 +44,7 @@ public class Config {
             String[] rowData = line.split(" +");
             switch (rowData[0]) {
                 case "port": port = Integer.parseInt(rowData[1]); break;
-                case "block": blockList.add(rowData[1]); break;
+                case "block": blockPatterns.add(rowData[1]); break;
                 default: throw new IllegalArgumentException("unknown attribute '" + rowData[0] + "'");
             }
         });
