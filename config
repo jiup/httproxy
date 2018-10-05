@@ -5,4 +5,5 @@ port 8080
 
 # A list of blocked URLS goes here
 block www.nytimes.com
+block www.baid.*
 block www.facebook.com

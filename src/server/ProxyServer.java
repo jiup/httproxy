@@ -101,6 +101,13 @@ public class ProxyServer extends Thread {
         }
     }
 
+    public void handleAccept(SocketChannel socketChannel) throws IOException {
+        logger.info("accept connection from " + socketChannel.getRemoteAddress());
+        socketChannel.configureBlocking(false);
+        socketChannel.socket().setKeepAlive(false);
+        socketChannel.register(selector, SelectionKey.OP_READ);
+    }
+
     public void handleConnect(SelectionKey key) throws IOException {
         SocketChannel socketChannel = (SocketChannel) key.channel();
         if (socketChannel.finishConnect()) {
@@ -116,13 +123,6 @@ public class ProxyServer extends Thread {
             logger.info("failure connected to " + socketChannel.getRemoteAddress());
             closePair(socketChannel);
         }
-    }
-
-    public void handleAccept(SocketChannel socketChannel) throws IOException {
-        logger.info("accept connection from " + socketChannel.getRemoteAddress());
-        socketChannel.configureBlocking(false);
-        socketChannel.socket().setKeepAlive(false);
-        socketChannel.register(selector, SelectionKey.OP_READ);
     }
 
     public void handleRead(SelectionKey key) throws IOException {
@@ -172,6 +172,119 @@ public class ProxyServer extends Thread {
         }
     }
 
+    private static final String METHOD_GET = "get";
+    private static final String METHOD_QUIT = "quit";
+
+    public void handleRequest(SelectionKey key) throws IOException {
+        SocketChannel socketChannel = (SocketChannel) key.channel();
+        try {
+            reqBuf.clear();
+            int len = socketChannel.read(reqBuf);
+            reqBuf.flip();
+            if (len == 0) return;
+            if (len == -1) {
+                logger.info("disconnect by peer " + socketChannel.getRemoteAddress());
+                closePair(socketChannel);
+                return;
+            }
+
+            CharBuffer charBuffer = decoder.decode(reqBuf);
+            if (!EOH.matcher(charBuffer).find()) {
+                if (len == REQ_BUF_SIZE) {
+                    logger.info("request entity too large (>" + REQ_BUF_SIZE + ") for " + socketChannel.getRemoteAddress());
+                    socketChannel.write(ByteBuffer.wrap(responseBytes(413, "Request entity out of limit (" + REQ_BUF_SIZE + ")", true)));
+                    socketChannel.close();
+                } else {
+                    logger.info("bad request (no EOH) from " + socketChannel.getRemoteAddress());
+                    socketChannel.write(ByteBuffer.wrap(responseBytes(400, "Bad request (no EOH)", true)));
+                    socketChannel.close();
+                }
+                return;
+            }
+            Optional<String> requestHeader = EOH.splitAsStream(charBuffer).findFirst();
+            if (!requestHeader.isPresent()) {
+                logger.info("bad request (zero length header) from " + socketChannel.getRemoteAddress());
+                socketChannel.write(ByteBuffer.wrap(responseBytes(400, "Bad request (zero length header)", true)));
+                socketChannel.close();
+                return;
+            }
+
+            String[] lines = CRLF.split(requestHeader.get());
+            if (lines.length < 1) {
+                logger.info("bad request (no request line) from " + socketChannel.getRemoteAddress());
+                socketChannel.write(ByteBuffer.wrap(responseBytes(400, "Bad request (no request line)", true)));
+                socketChannel.close();
+                return;
+            }
+
+            System.out.println(requestHeader.get());
+
+            // check request headers
+            String[] fields = lines[0].toLowerCase().split(" +");
+            String method = fields[0];
+            URL requestURI = new URL(fields[1].matches("^\\w+?://.*") ? fields[1] : "http://".concat(fields[1]));
+            String httpVersion = fields[2];
+            if (METHOD_QUIT.equals(method)) {
+                logger.info("[quit] activated by " + socketChannel.getRemoteAddress());
+                socketChannel.close();
+                close();
+                return;
+            }
+            if (!METHOD_GET.equals(method)) {
+                logger.info("method '" + method + "' not supported for " + socketChannel.getRemoteAddress());
+                socketChannel.write(ByteBuffer.wrap(responseBytes(405, "HTTP_BAD_METHOD", false)));
+                socketChannel.close();
+                return;
+            }
+
+            for (String pattern : blockPatterns) {
+                if (requestURI.getHost().matches(pattern)) {
+                    logger.info("request for '" + requestURI.getHost() + "' blocked by proxy " + socketChannel.getRemoteAddress());
+                    socketChannel.write(ByteBuffer.wrap(responseBytes(403, "Forbidden", true)));
+                    socketChannel.close();
+                    return;
+                }
+            }
+
+            logger.info("request: " + method + ", " + requestURI + ", " + httpVersion + " " + socketChannel.getRemoteAddress());
+            if (httpVersion.equals("http/1.0")) {
+                boolean keepAlive = false;
+                for (int i = 1; i < lines.length; i++) {
+                    fields = lines[i].split(":", 2);
+                    String attribute = fields[0].trim().toLowerCase();
+                    String value = fields[1].trim();
+
+                    if (attribute.equals("connection") && value.equals("keep-alive")) {
+                        keepAlive = true;
+                    }
+                }
+                if (!keepAlive) {
+                    socketChannel.close();
+                }
+            }
+
+            // parse host and port
+            SocketAddress remoteAddress = new InetSocketAddress(requestURI.getHost(),
+                    requestURI.getPort() > 0 ? requestURI.getPort() : 80);
+
+            // check connection availability
+            SocketChannel outboundSocketChannel = SocketChannel.open();
+            outboundSocketChannel.configureBlocking(false);
+            outboundSocketChannel.register(selector, SelectionKey.OP_CONNECT);
+            outboundSocketChannel.connect(remoteAddress);
+            outboundMap.put(socketChannel, outboundSocketChannel);
+            inboundMap.put(outboundSocketChannel, socketChannel);
+            requestBytes.put(outboundSocketChannel, Arrays.copyOf(reqBuf.array(), len));
+
+        } catch (UnresolvedAddressException e) {
+            logger.warning("request url unresolved " + socketChannel.getRemoteAddress());
+            closePair(socketChannel);
+
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
     public void handleResponse(CharBuffer charBuffer, SocketChannel socketChannel) {
         if (!EOH.matcher(charBuffer).find()) return;
 
@@ -207,90 +320,12 @@ public class ProxyServer extends Thread {
         }
     }
 
-    public void handleRequest(SelectionKey key) throws IOException {
-        SocketChannel socketChannel = (SocketChannel) key.channel();
-        try {
-            reqBuf.clear();
-            int len = socketChannel.read(reqBuf);
-            reqBuf.flip();
-            if (len == 0) return;
-            if (len == -1) {
-                logger.info("disconnect by peer " + socketChannel.getRemoteAddress());
-                closePair(socketChannel);
-                return;
-            }
-
-            CharBuffer charBuffer = decoder.decode(reqBuf);
-            if (!EOH.matcher(charBuffer).find()) {
-                if (len == REQ_BUF_SIZE) {
-                    // TODO 413 Request entity too large > 8192
-                    logger.info("request entity too large (>8192) for " + socketChannel.getRemoteAddress());
-                } else {
-                    // TODO 400 bad request
-                    logger.info("bad request (no EOH) from " + socketChannel.getRemoteAddress());
-                }
-                return;
-            }
-            Optional<String> requestHeader = EOH.splitAsStream(charBuffer).findFirst();
-            if (!requestHeader.isPresent()) {
-                // TODO 400 bad request
-                logger.info("bad request (zero length header) from " + socketChannel.getRemoteAddress());
-                return;
-            }
-
-            String[] lines = CRLF.split(requestHeader.get());
-            if (lines.length < 1) {
-                // TODO 400 bad request
-                logger.info("bad request (no request_line) from " + socketChannel.getRemoteAddress());
-                return;
-            }
-
-//            System.out.println(requestHeader.get());
-
-//            System.out.println(lines[0]);
-
-            // TODO valid request
-            String[] fields = lines[0].split(" +");
-            String method = fields[0];
-            String requestURI = fields[1];
-            String httpVersion = fields[2];
-            for (String pattern : blockPatterns) {
-                if (requestURI.matches(pattern)) {
-                    // TODO web page access
-                    return;
-                }
-            }
-            logger.info("good request! " + method + ", " + requestURI + ", " + httpVersion);
-            for (int i = 1; i < lines.length; i++) {
-                fields = lines[i].split(":", 2);
-
-                String attribute = fields[0].trim().toLowerCase();
-                String value = fields[1].trim();
-
-                // TODO parse headers above
-//            logger.info("HEADER_ATTR " + attribute + ": " + value);
-            }
-
-            // TODO parse host and port
-            URL url = new URL(requestURI.matches("^\\w+?://.*") ? requestURI : "http://".concat(requestURI));
-            SocketAddress remoteAddress = new InetSocketAddress(url.getHost(), url.getPort() > 0 ? url.getPort() : 80);
-
-            // TODO check connection availability
-            SocketChannel outboundSocketChannel = SocketChannel.open();
-            outboundSocketChannel.configureBlocking(false);
-            outboundSocketChannel.register(selector, SelectionKey.OP_CONNECT);
-            outboundSocketChannel.connect(remoteAddress);
-            outboundMap.put(socketChannel, outboundSocketChannel);
-            inboundMap.put(outboundSocketChannel, socketChannel);
-            requestBytes.put(outboundSocketChannel, Arrays.copyOf(reqBuf.array(), len));
-
-        } catch (UnresolvedAddressException e) {
-            logger.warning("request url unresolved " + socketChannel.getRemoteAddress());
-            closePair(socketChannel);
-
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+    private byte[] responseBytes(int statusCode, String reasonPhrase, boolean withBody) {
+        String responseStr = "HTTP/1.1 " + statusCode + " " + reasonPhrase + "\r\n" +
+                "Content-Type: text/html\r\nConnection: close" + "\r\n\r\n" + (withBody ? "<html><head><title>" +
+                statusCode + " " + reasonPhrase + "</title></head>" + "<body bgcolor='white'><center><h1>" +
+                statusCode + " " + reasonPhrase + "</h1></center>" + "<hr><center>Proxy Server</center></body></html>" : "");
+        return responseStr.getBytes(StandardCharsets.ISO_8859_1);
     }
 
     @SuppressWarnings("Duplicates")
