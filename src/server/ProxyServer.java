@@ -18,14 +18,16 @@ import java.util.regex.Pattern;
 
 public class ProxyServer extends Thread {
     private static final Logger logger = Logger.getLogger(ProxyServer.class.getName());
+    private static final CharsetDecoder decoder = StandardCharsets.ISO_8859_1.newDecoder();
     private static final Pattern EOH = Pattern.compile("\r\n\r\n|\n\n");
     private static final Pattern CRLF = Pattern.compile("\r\n|\n");
-    private static final int DATA_BUF_SIZE = 1024;
+    private static final int DATA_BUF_SIZE = 4096 * 1024;
     private static final int REQ_BUF_SIZE = 8192;
 
     private final Map<SocketChannel, SocketChannel> outboundMap;
     private final Map<SocketChannel, SocketChannel> inboundMap;
     private final Map<SocketChannel, byte[]> requestBytes;
+    private final Set<SocketChannel> futureClose;
     private final Object closeLock = new Object();
     private volatile boolean closed;
     private InetSocketAddress address;
@@ -40,6 +42,7 @@ public class ProxyServer extends Thread {
         this.outboundMap = new ConcurrentHashMap<>();
         this.inboundMap = new ConcurrentHashMap<>();
         this.requestBytes = new HashMap<>();
+        this.futureClose = new HashSet<>();
         this.address = new InetSocketAddress(config.getPort());
         this.blockPatterns = config.getBlockPatterns();
         this.reqBuf = ByteBuffer.allocate(REQ_BUF_SIZE);
@@ -47,8 +50,6 @@ public class ProxyServer extends Thread {
         this.writeBuf = ByteBuffer.allocate(DATA_BUF_SIZE);
         logger.info("proxy server initialized.");
     }
-
-    int i = 0;
 
     @Override
     public void run() {
@@ -60,26 +61,30 @@ public class ProxyServer extends Thread {
             channel.register(selector, channel.validOps());
             logger.info("listening at " + address + "...");
             while (!closed) {
-                selector.select();
-                System.out.println("select #" + i++);
-                Set<SelectionKey> selectionKeys = selector.selectedKeys();
-                Iterator<SelectionKey> keyIterator = selectionKeys.iterator();
-                while (keyIterator.hasNext()) {
-                    SelectionKey key = keyIterator.next();
-                    keyIterator.remove();
-                    if (key.isValid()) {
-                        switch (key.interestOps()) {
-                            case SelectionKey.OP_CONNECT:
-                                handleConnect(key);
-                                break;
-                            case SelectionKey.OP_ACCEPT:
-                                handleAccept(channel.accept());
-                                break;
-                            case SelectionKey.OP_READ:
-                                handleRead(key);
-                                break;
+                try {
+                    selector.select();
+                    Set<SelectionKey> selectionKeys = selector.selectedKeys();
+                    Iterator<SelectionKey> keyIterator = selectionKeys.iterator();
+                    while (keyIterator.hasNext()) {
+                        SelectionKey key = keyIterator.next();
+                        keyIterator.remove();
+                        if (key.isValid()) {
+                            switch (key.interestOps()) {
+                                case SelectionKey.OP_ACCEPT:
+                                    handleAccept(channel.accept());
+                                    break;
+                                case SelectionKey.OP_CONNECT:
+                                    handleConnect(key);
+                                    break;
+                                case SelectionKey.OP_READ:
+                                    handleRead(key);
+                                    break;
+                            }
                         }
                     }
+                } catch (Exception e) {
+                    logger.severe(e.getMessage());
+                    e.printStackTrace();
                 }
             }
         } catch (IOException e) {
@@ -116,7 +121,7 @@ public class ProxyServer extends Thread {
     public void handleAccept(SocketChannel socketChannel) throws IOException {
         logger.info("accept connection from " + socketChannel.getRemoteAddress());
         socketChannel.configureBlocking(false);
-        socketChannel.socket().setKeepAlive(true);
+        socketChannel.socket().setKeepAlive(false);
         socketChannel.register(selector, SelectionKey.OP_READ);
     }
 
@@ -126,36 +131,83 @@ public class ProxyServer extends Thread {
         boolean outbound = outboundMap.containsKey(socketChannel);
 
         if (!inbound && !outbound) {
-            handleHandshake(key);
+            handleRequest(key);
             return;
         }
 
         dataBuf.clear();
         int len;
-        do {
-            try {
+        try {
+            do {
                 len = socketChannel.read(dataBuf);
                 dataBuf.flip();
-                if (len == 0) break;
+                if (len == 0) {
+                    if (futureClose.remove(socketChannel)) {
+                        logger.info("response completed, close connection pair for " + socketChannel.getRemoteAddress());
+                        closePair(socketChannel);
+                    }
+                    break;
+                }
                 if (len == -1) {
                     logger.info("disconnect by peer " + socketChannel.getRemoteAddress());
                     closePair(socketChannel);
                 } else {
                     SocketChannel peerSocketChannel = inbound ? inboundMap.get(socketChannel) : outboundMap.get(socketChannel);
-                    peerSocketChannel.write(ByteBuffer.wrap(Arrays.copyOf(dataBuf.array(), len)));
-                    logger.info("forward " + (inbound ?
-                            (peerSocketChannel.getRemoteAddress() + " <== " + socketChannel.getRemoteAddress() + " [" + len + " bytes]") :
-                            (socketChannel.getRemoteAddress() + " ==> " + peerSocketChannel.getRemoteAddress() + " [" + len + " bytes]")));
+                    CharBuffer charBuffer = decoder.decode(dataBuf);
+                    if (inbound) {
+                        if (!futureClose.contains(socketChannel)) handleResponse(charBuffer, socketChannel);
+
+                        peerSocketChannel.write(ByteBuffer.wrap(Arrays.copyOf(dataBuf.array(), len)));
+                        logger.info("forward " + peerSocketChannel.getRemoteAddress() + " <== " + socketChannel.getRemoteAddress() + " [" + len + " bytes]");
+                    } else {
+                        peerSocketChannel.write(ByteBuffer.wrap(Arrays.copyOf(dataBuf.array(), len)));
+                        logger.info("forward " + socketChannel.getRemoteAddress() + " ==> " + peerSocketChannel.getRemoteAddress() + " [" + len + " bytes]");
+                    }
                 }
-            } catch (IOException e) {
-                logger.info("reset by peer " + socketChannel);
-                closePair(socketChannel);
-                return;
-            }
-        } while (len > 0);
+            } while (len > 0);
+        } catch (IOException e) {
+            e.printStackTrace();
+            logger.info("reset by peer " + socketChannel);
+            closePair(socketChannel);
+        }
     }
 
-    public void handleHandshake(SelectionKey key) throws IOException {
+    public void handleResponse(CharBuffer charBuffer, SocketChannel socketChannel) {
+        if (!EOH.matcher(charBuffer).find()) return;
+
+        Optional<String> responseHeader = EOH.splitAsStream(charBuffer).findFirst();
+        if (!responseHeader.isPresent()) return;
+
+        String[] lines = CRLF.split(responseHeader.get());
+        if (lines.length < 1) return; // header not contained
+
+        String[] fields = lines[0].split(" +", 3);
+        if (fields.length != 3) return; // non-first response
+
+        String httpVersion = fields[0];
+        String statusCode = fields[1];
+        String reasonPhrase = fields[2];
+        try {
+            logger.info("response " + httpVersion + ", " + statusCode + ", " + reasonPhrase + " " + socketChannel.getRemoteAddress());
+        } catch (IOException e) {
+            logger.info("response " + httpVersion + ", " + statusCode + ", " + reasonPhrase + " " + socketChannel);
+        }
+
+        for (int i = 1; i < lines.length; i++) {
+            fields = lines[i].split(":", 2);
+            if (fields.length != 2) break;
+
+            String attribute = fields[0].trim().toLowerCase();
+            String value = fields[1].trim();
+
+            if (attribute.equals("connection") && value.equals("close")) {
+                futureClose.add(socketChannel); // close when stream finished
+                return;
+            }
+        }
+    }
+
+    public void handleRequest(SelectionKey key) throws IOException {
         SocketChannel socketChannel = (SocketChannel) key.channel();
         try {
             reqBuf.clear();
@@ -164,16 +216,15 @@ public class ProxyServer extends Thread {
             if (len == 0) return;
             if (len == -1) {
                 logger.info("disconnect by peer " + socketChannel.getRemoteAddress());
-                socketChannel.close();
+                closePair(socketChannel);
                 return;
             }
 
-            CharsetDecoder decoder = StandardCharsets.ISO_8859_1.newDecoder();
             CharBuffer charBuffer = decoder.decode(reqBuf);
             if (!EOH.matcher(charBuffer).find()) {
                 if (len == REQ_BUF_SIZE) {
                     // TODO 413 Request entity too large > 8192
-                    logger.info("request entity too large from " + socketChannel.getRemoteAddress());
+                    logger.info("request entity too large (>8192) for " + socketChannel.getRemoteAddress());
                 } else {
                     // TODO 400 bad request
                     logger.info("bad request (no EOH) from " + socketChannel.getRemoteAddress());
@@ -193,6 +244,10 @@ public class ProxyServer extends Thread {
                 logger.info("bad request (no request_line) from " + socketChannel.getRemoteAddress());
                 return;
             }
+
+//            System.out.println(requestHeader.get());
+
+//            System.out.println(lines[0]);
 
             // TODO valid request
             String[] fields = lines[0].split(" +");
@@ -228,54 +283,56 @@ public class ProxyServer extends Thread {
             outboundMap.put(socketChannel, outboundSocketChannel);
             inboundMap.put(outboundSocketChannel, socketChannel);
             requestBytes.put(outboundSocketChannel, Arrays.copyOf(reqBuf.array(), len));
+
         } catch (UnresolvedAddressException e) {
             logger.warning("request url unresolved " + socketChannel.getRemoteAddress());
             closePair(socketChannel);
+
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
+    @SuppressWarnings("Duplicates")
     private void closePair(SocketChannel socketChannel) {
         if (inboundMap.containsKey(socketChannel)) {
-            SocketChannel inboundChannel = inboundMap.get(socketChannel);
+            SocketChannel localChannel = inboundMap.get(socketChannel);
             synchronized (inboundMap) {
                 synchronized (outboundMap) {
-                    inboundMap.remove(socketChannel);
-                    outboundMap.remove(inboundChannel);
+                    try {
+                        localChannel.close();
+                        outboundMap.remove(inboundMap.remove(socketChannel)).close();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
                 }
-            }
-            try {
-                inboundChannel.close();
-            } catch (IOException e) {
-                e.printStackTrace();
             }
         } else if (outboundMap.containsKey(socketChannel)) {
-            SocketChannel outboundChannel = outboundMap.get(socketChannel);
+            SocketChannel remoteChannel = outboundMap.get(socketChannel);
             synchronized (outboundMap) {
                 synchronized (inboundMap) {
-                    outboundMap.remove(socketChannel);
-                    inboundMap.remove(outboundChannel);
+                    try {
+                        remoteChannel.close();
+                        inboundMap.remove(outboundMap.remove(socketChannel)).close();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
                 }
             }
+        } else {
             try {
-                outboundChannel.close();
+                socketChannel.close();
             } catch (IOException e) {
                 e.printStackTrace();
             }
-        }
-        try {
-            socketChannel.close();
-        } catch (IOException e) {
-            e.printStackTrace();
         }
     }
 
     private void doClose() {
         try {
-            channel.close();
             selector.selectedKeys().clear();
             selector.close();
+            channel.close();
         } catch (IOException e) {
             e.printStackTrace();
         }
