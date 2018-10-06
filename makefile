@@ -1,5 +1,5 @@
 SDIR = ./src/
-DDIR = ./bin/
+DDIR = ./
 JC = javac
 
 .SUFFIXES: .java .class
@@ -17,7 +17,6 @@ init:
 	mkdir -p $(DDIR)
 
 install: init classes
-	cp config $(DDIR)
 	@echo 'java server.Main $$1' > $(DDIR)ProxyServer
 	chmod +x $(DDIR)ProxyServer
 	@echo 'build complete!'
@@ -25,12 +24,7 @@ install: init classes
 classes: $(CLASSES:.java=.class)
 
 clean:
-	$(RM) -r $(DDIR)server/*.class \
-	$(DDIR)util/*.class \
-	$(DDIR)config \
+	$(RM) -r $(DDIR)util/ \
+	$(DDIR)server/ \
 	$(DDIR)ProxyServer
-	@echo 'done!'
-
-dpclean:
-	$(RM) -r $(DDIR)
 	@echo 'done!'
