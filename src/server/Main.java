@@ -11,7 +11,7 @@ public class Main {
         try {
             if (args.length != 1) {
                 logger.info("usage: ProxyServer <config_file>");
-                System.exit(0);
+                return;
             }
 
             new ProxyServer(new Config(args[0])).start();

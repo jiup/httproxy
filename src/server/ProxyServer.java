@@ -238,7 +238,7 @@ public class ProxyServer extends Thread {
 
             for (String pattern : blockPatterns) {
                 if (requestURI.getHost().matches(pattern)) {
-                    logger.warning("request for '" + requestURI.getHost() + "' blocked by proxy " + socketChannel);
+                    logger.warning("request for '" + requestURI + "' blocked by proxy " + socketChannel);
                     socketChannel.write(ByteBuffer.wrap(getResponseBytes(403, "Forbidden", true)));
                     socketChannel.close();
                     return;
@@ -324,7 +324,8 @@ public class ProxyServer extends Thread {
         String responseStr = HTTP_VER_1_1 + " " + statusCode + " " + reasonPhrase + "\r\n" +
                 "Content-Type: text/html\r\nConnection: close" + "\r\n\r\n" + (withBody ? "<html><head><title>" +
                 statusCode + " " + reasonPhrase + "</title></head>" + "<body bgcolor='white'><center><h1>" +
-                statusCode + " " + reasonPhrase + "</h1></center>" + "<hr><center>Proxy Server</center></body></html>" : "");
+                statusCode + " " + reasonPhrase + "</h1></center>" + "<hr><center>Proxy Server - " +
+                "Jiupeng Zhang</center></body></html>" : "");
         return responseStr.getBytes(StandardCharsets.ISO_8859_1);
     }
 
