@@ -4,6 +4,10 @@ import util.Config;
 
 import java.util.logging.Logger;
 
+/**
+ * @author Jiupeng Zhang
+ * @since 10/03/2018
+ */
 public class Main {
     private static final Logger logger = Logger.getLogger(Main.class.getName());
 

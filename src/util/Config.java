@@ -4,8 +4,14 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.StringJoiner;
 
+/**
+ * @author Jiupeng Zhang
+ * @since 10/03/2018
+ */
 public class Config {
     private int port = 8080;
     private List<String> blockPatterns = new ArrayList<>();
@@ -43,9 +49,14 @@ public class Config {
 
             String[] rowData = line.split(" +");
             switch (rowData[0]) {
-                case "port": port = Integer.parseInt(rowData[1]); break;
-                case "block": blockPatterns.add(rowData[1]); break;
-                default: throw new IllegalArgumentException("unknown attribute '" + rowData[0] + "'");
+                case "port":
+                    port = Integer.parseInt(rowData[1]);
+                    break;
+                case "block":
+                    blockPatterns.add(rowData[1]);
+                    break;
+                default:
+                    throw new IllegalArgumentException("unknown attribute '" + rowData[0] + "'");
             }
         });
     }

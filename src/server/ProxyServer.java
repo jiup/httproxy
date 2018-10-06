@@ -17,6 +17,10 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.regex.Pattern;
 
+/**
+ * @author Jiupeng Zhang
+ * @since 10/04/2018
+ */
 public class ProxyServer extends Thread {
     private static final Logger logger = Logger.getLogger(ProxyServer.class.getName());
     private static final CharsetDecoder decoder = StandardCharsets.ISO_8859_1.newDecoder();
