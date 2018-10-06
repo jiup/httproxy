@@ -14,11 +14,14 @@ public class Main {
                 System.exit(0);
             }
 
-            Config config = new Config(args[0]);
-            new ProxyServer(config).start();
+            new ProxyServer(new Config(args[0])).start();
+
         } catch (Exception e) {
-            logger.severe(e.getMessage());
-            e.printStackTrace();
+            if (e.getMessage() != null) {
+                logger.severe(e.getMessage());
+            } else {
+                e.printStackTrace();
+            }
         }
     }
 }
