@@ -1,6 +1,5 @@
 SDIR = ./src/
 DDIR = ./bin/
-RDIR = ./data/
 JC = javac
 
 .SUFFIXES: .java .class
@@ -8,9 +7,8 @@ JC = javac
 	$(JC) -sourcepath $(SDIR) -d $(DDIR) $*.java
 
 CLASSES = \
-	$(SDIR)client/MyClient.java \
-	$(SDIR)client/Main.java \
-	$(SDIR)server/MyServer.java \
+	$(SDIR)util/Config.java \
+	$(SDIR)server/ProxyServer.java \
 	$(SDIR)server/Main.java
 
 default: install
@@ -19,20 +17,18 @@ init:
 	mkdir -p $(DDIR)
 
 install: init classes
-	cp $(RDIR)cityzip.csv $(DDIR)
-	@echo 'java client.Main $$1 $$2' > $(DDIR)myclient
-	@echo 'java server.Main $$1' > $(DDIR)myserver
-	chmod +x $(DDIR)myclient $(DDIR)myserver
+	cp config $(DDIR)
+	@echo 'java server.Main $$1' > $(DDIR)ProxyServer
+	chmod +x $(DDIR)ProxyServer
 	@echo 'build complete!'
 
 classes: $(CLASSES:.java=.class)
 
 clean:
-	$(RM) -r $(DDIR)client/*.class \
-	$(DDIR)server/*.class \
-	$(DDIR)cityzip.csv \
-	$(DDIR)myclient \
-	$(DDIR)myserver
+	$(RM) -r $(DDIR)server/*.class \
+	$(DDIR)util/*.class \
+	$(DDIR)config \
+	$(DDIR)ProxyServer
 	@echo 'done!'
 
 dpclean:
