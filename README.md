@@ -1,9 +1,10 @@
-# CSC457 - Web Proxy
+# HTTProxy
 
+A simple local http proxy.
 
 #### Overview
 
-* This program was written based on the java selector NIO.
+* This program was coded based on the java selector NIO.
 
 * It **supports** persistent HTTP connection by check both HTTP requests and responses and scans their headers.
 
@@ -22,11 +23,10 @@
 #### Structure of directory
 
 ```
-p2_jzh149
+httproxy
 ├── README.md *
 ├── config
 ├── makefile
-├── p2_jzh149.iml
 └── src
     ├── server
     │   ├── Main.java
@@ -37,5 +37,5 @@ p2_jzh149
 
 #### How to use
 
-- compile and build: `./path/to/p2_jzh149/make`
-- run: `./path/to/p2_jzh149/bin/ProxyServer <config_file>`
+- compile and build: `./path/to/httproxy/make`
+- run: `./path/to/httproxy/bin/ProxyServer <config_file>`
